@@ -1,0 +1,25 @@
+{
+  "mouse_movement_interval": [
+    1,
+    5
+  ],
+  "click_probability": 0.3,
+  "idle_periods": {
+    "min_duration": 5,
+    "max_duration": 30
+  },
+  "activity_patterns": {
+    "coding": {
+      "mouse_movement_frequency": 0.6,
+      "click_frequency": 0.4
+    },
+    "browsing": {
+      "mouse_movement_frequency": 0.9,
+      "click_frequency": 0.7
+    },
+    "research": {
+      "mouse_movement_frequency": 0.8,
+      "click_frequency": 0.6
+    }
+  }
+}
