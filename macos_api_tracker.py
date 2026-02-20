@@ -7,8 +7,7 @@ Mirrors windows_api_tracker.py functionality exactly
 
 import time
 import random
-import threading
-from datetime import datetime, timedelta
+from datetime import datetime
 import json
 import os
 import sys
@@ -37,6 +36,10 @@ try:
     HAS_KEYBOARD = True
 except ImportError:
     HAS_KEYBOARD = False
+
+# Track mouse position for failsafe
+_last_mouse_position = None
+_failSafeTriggered = False
 
 # Mouse button constants (for reference, not used in macOS API)
 MOUSEEVENTF_MOVE = 0x0001
@@ -92,23 +95,14 @@ class MacOSAPITracker:
             'mistakes_made': 0
         }
         
-        # Get screen dimensions using Quartz
-        if HAS_QUARTZ:
-            try:
-                self.screen_width = int(Quartz.CGDisplayPixelsWide(Quartz.CGMainDisplayID()))
-                self.screen_height = int(Quartz.CGDisplayPixelsHigh(Quartz.CGMainDisplayID()))
-            except Exception:
-                display_id = Quartz.CGMainDisplayID()
-                self.screen_width = int(Quartz.CGDisplayPixelsWide(display_id))
-                self.screen_height = int(Quartz.CGDisplayPixelsHigh(display_id))
-        elif HAS_PYAUTOGUI:
-            self.screen_width, self.screen_height = pyautogui.size()
-        else:
-            self.screen_width = 1920
-            self.screen_height = 1080
-            print("⚠️ Could not detect screen size, using default 1920x1080")
+        # Check for Accessibility permissions on macOS
+        self._check_accessibility_permissions()
         
-        print(f"📺 Screen detected: {self.screen_width}x{self.screen_height}")
+        # Detect natural scrolling setting (macOS)
+        self.natural_scrolling = self._detect_natural_scrolling()
+        
+        # Get screen dimensions using Quartz
+        self._detect_screen_dimensions()
         
         if HAS_QUARTZ:
             print("✅ Real macOS API control enabled (Quartz/CoreGraphics)")
@@ -117,6 +111,61 @@ class MacOSAPITracker:
         
         print("⚠️  WARNING: This will actually move your mouse and click!")
         print("⚠️  Make sure no important work is open!")
+        print("💡 Tip: Create a 'STOP_TRACKER.txt' file to stop immediately")
+    
+    def _check_accessibility_permissions(self):
+        """Check if the app has Accessibility permissions on macOS"""
+        if HAS_QUARTZ:
+            try:
+                # Try to create a simple event to test permissions
+                test_event = Quartz.CGEventCreate(None)
+                if test_event:
+                    # Clean up
+                    del test_event
+                    print("✅ Accessibility permissions verified")
+            except Exception as e:
+                print("⚠️  WARNING: Accessibility permissions may not be granted!")
+                print("   Go to: System Preferences > Security & Privacy > Privacy > Accessibility")
+                print("   Add your terminal/Python to the allowed apps")
+    
+    def _detect_natural_scrolling(self):
+        """Detect if macOS natural scrolling is enabled"""
+        try:
+            # Check macOS natural scrolling setting
+            # com.apple.swipescrolldirection: 1 = natural, 0 = traditional
+            import subprocess
+            result = subprocess.run(
+                ['defaults', 'read', '-g', 'com.apple.swipescrolldirection'],
+                capture_output=True, text=True
+            )
+            if result.returncode == 0 and '1' in result.stdout:
+                return True  # Natural scrolling enabled
+        except:
+            pass
+        return False  # Default to traditional
+    
+    def _detect_screen_dimensions(self):
+        """Detect screen dimensions with proper Retina support"""
+        if HAS_QUARTZ:
+            try:
+                display_id = Quartz.CGMainDisplayID()
+                self.screen_width = int(Quartz.CGDisplayPixelsWide(display_id))
+                self.screen_height = int(Quartz.CGDisplayPixelsHigh(display_id))
+            except Exception as e:
+                print(f"⚠️ Error detecting screen: {e}")
+                if HAS_PYAUTOGUI:
+                    self.screen_width, self.screen_height = pyautogui.size()
+                else:
+                    self.screen_width = 1920
+                    self.screen_height = 1080
+        elif HAS_PYAUTOGUI:
+            self.screen_width, self.screen_height = pyautogui.size()
+        else:
+            self.screen_width = 1920
+            self.screen_height = 1080
+            print("⚠️ Could not detect screen size, using default 1920x1080")
+        
+        print(f"📺 Screen detected: {self.screen_width}x{self.screen_height}")
     
     def load_config(self):
         """Load configuration from file or create default"""
@@ -198,6 +247,10 @@ class MacOSAPITracker:
     
     def move_mouse_to(self, x, y):
         """Move mouse to absolute position using macOS API"""
+        # Check failsafe before moving
+        if self._check_failsafe():
+            return False
+            
         try:
             if HAS_QUARTZ:
                 move = Quartz.CGEventCreateMouseEvent(
@@ -307,11 +360,17 @@ class MacOSAPITracker:
             return False
     
     def scroll_wheel(self, direction, amount=3):
-        """Scroll mouse wheel using macOS API"""
+        """Scroll mouse wheel using macOS API
+        direction: 1 = up, -1 = down (inverted if natural scrolling enabled)
+        """
         try:
+            # Adjust for natural scrolling (inverts the direction)
+            actual_direction = direction
+            if self.natural_scrolling:
+                actual_direction = -direction
+            
             if HAS_QUARTZ:
-                # macOS uses negative for down, positive for up
-                scroll_delta = direction * amount
+                scroll_delta = actual_direction * amount
                 event = Quartz.CGEventCreateScrollWheelEvent(
                     None, 
                     Quartz.kCGScrollEventUnitLine,
@@ -321,10 +380,39 @@ class MacOSAPITracker:
                 if event:
                     Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
             elif HAS_PYAUTOGUI:
-                pyautogui.scroll(direction * amount)
+                pyautogui.scroll(actual_direction * amount)
             return True
         except Exception as e:
             print(f"Error scrolling: {e}")
+            return False
+    
+    def _check_failsafe(self):
+        """Check if mouse is in top-left corner (failsafe trigger)"""
+        global _last_mouse_position, _failSafeTriggered
+        
+        if _failSafeTriggered:
+            return True
+            
+        try:
+            if HAS_QUARTZ:
+                event = Quartz.CGEventCreate(None)
+                pos = Quartz.CGEventGetLocation(event)
+                x, y = pos.x, pos.y
+            elif HAS_PYAUTOGUI:
+                x, y = pyautogui.position()
+            else:
+                return False
+            
+            # Check if mouse is in top-left corner (0,0 to 10,10)
+            if x < 10 and y < 10:
+                print("\n🛑 FAILSAFE TRIGGERED: Mouse in top-left corner!")
+                _failSafeTriggered = True
+                self.is_running = False
+                return True
+            
+            _last_mouse_position = (x, y)
+            return False
+        except:
             return False
     
     def press_key(self, vk_code):
