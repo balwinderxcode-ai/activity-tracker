@@ -7,8 +7,7 @@ Mirrors windows_api_tracker.py functionality
 
 import time
 import random
-import threading
-from datetime import datetime, timedelta
+from datetime import datetime
 import json
 import os
 import sys
@@ -16,8 +15,7 @@ import sys
 # macOS-specific imports
 try:
     import Quartz
-    from Quartz import CGEvent, CGKeyCode
-    import AppKit
+    from Quartz import CGEvent
     HAS_QUARTZ = True
 except ImportError:
     HAS_QUARTZ = False
@@ -26,8 +24,12 @@ except ImportError:
 try:
     import pyautogui
     HAS_PYAUTOGUI = True
+    # Configure pyautogui for safety
+    pyautogui.PAUSE = 0.01
+    pyautogui.FAILSAFE = True
 except ImportError:
     HAS_PYAUTOGUI = False
+    print("⚠️ pyautogui not available")
 
 try:
     import keyboard
@@ -90,8 +92,14 @@ class MacOSAPITracker:
         
         # Get screen dimensions using Quartz
         if HAS_QUARTZ:
-            self.screen_width = int(Quartz.CGDisplayPixelsWide(Quartz.CGMainDisplayID()))
-            self.screen_height = int(Quartz.CGDisplayPixelsHigh(Quartz.CGMainDisplayID()))
+            try:
+                self.screen_width = int(Quartz.CGDisplayPixelsWide(Quartz.CGMainDisplayID()))
+                self.screen_height = int(Quartz.CGDisplayPixelsHigh(Quartz.CGMainDisplayID()))
+            except Exception:
+                # Fallback: use primary display bounds
+                display_id = Quartz.CGMainDisplayID()
+                self.screen_width = int(Quartz.CGDisplayPixelsWide(display_id))
+                self.screen_height = int(Quartz.CGDisplayPixelsHigh(display_id))
         elif HAS_PYAUTOGUI:
             self.screen_width, self.screen_height = pyautogui.size()
         else:
@@ -208,21 +216,16 @@ class MacOSAPITracker:
             return False
     
     def move_mouse_relative(self, dx, dy):
-        """Move mouse relatively"""
+        """Move mouse relatively using pyautogui (more reliable for relative)"""
         try:
-            if HAS_QUARTZ:
-                move = Quartz.CGEventCreateMouseEvent(
-                    None,
-                    Quartz.kCGEventMouseMoved,
-                    (dx, dy),
-                    Quartz.kCGMouseButtonLeft
-                )
-                Quartz.CGEventPost(Quartz.kCGHIDEventTap, move)
-            elif HAS_PYAUTOGUI:
+            if HAS_PYAUTOGUI:
+                pyautogui.move(dx, dy)
+            elif HAS_QUARTZ:
+                # Use pyautogui fallback for relative movement
                 pyautogui.move(dx, dy)
             return True
         except Exception as e:
-            print(f"Error moving mouse: {e}")
+            print(f"Error moving mouse relative: {e}")
             return False
     
     def click_mouse(self, button='left'):
@@ -312,40 +315,87 @@ class MacOSAPITracker:
         try:
             if HAS_QUARTZ:
                 scroll_amount = -clicks if direction == 'down' else clicks
+                # Use kCGScrollEventUnitLine for better compatibility
                 event = Quartz.CGEventCreateScrollWheelEvent(
-                    None, Quartz.kCGScrollEventUnitPixel, 1, scroll_amount
+                    None, 
+                    Quartz.kCGScrollEventUnitLine,  # Use line-based scrolling
+                    1,  # Number of wheels
+                    scroll_amount
                 )
-                Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
+                if event:
+                    Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
             elif HAS_PYAUTOGUI:
                 pyautogui.scroll(-clicks if direction == 'down' else clicks)
             return True
         except Exception as e:
             print(f"Error scrolling: {e}")
+            # Fallback to pyautogui if available
+            if HAS_PYAUTOGUI:
+                try:
+                    pyautogui.scroll(-clicks if direction == 'down' else clicks)
+                    return True
+                except:
+                    pass
             return False
     
-    def press_key(self, key_code, modifiers=None):
-        """Press key using Quartz/CoreGraphics"""
+    def press_key(self, key, modifiers=None):
+        """Press key using Quartz/CoreGraphics or keyboard/pyautogui"""
+        # Map common key names to key codes
+        key_map = {
+            'left': 0x7B, 'right': 0x7C, 'up': 0x7E, 'down': 0x7D,
+            'tab': 0x30, 'return': 0x24, 'enter': 0x24,
+            'backspace': 0x33, 'delete': 0x75, 'space': 0x31,
+            'shift': 0x38, 'control': 0x3B, 'escape': 0x35, 'esc': 0x35,
+            'home': 0x7F, 'end': 0x7B, 'pageup': 0x7B, 'pagedown': 0x7C,
+        }
+        
         try:
+            # Convert key to code if it's a string
+            if isinstance(key, str):
+                key_code = key_map.get(key.lower(), ord(key.upper()) if len(key) == 1 else 0x24)
+            else:
+                key_code = key
+            
             if HAS_KEYBOARD:
-                if modifiers:
-                    keyboard.send(key_code, modifiers=modifiers)
-                else:
-                    keyboard.send(key_code)
-            elif HAS_QUARTZ:
-                key_down = Quartz.CGEventCreateKeyboardEvent(None, key_code, True)
-                key_up = Quartz.CGEventCreateKeyboardEvent(None, key_code, False)
-                
-                if modifiers:
-                    if 'shift' in modifiers:
-                        Quartz.CGEventSetFlags(key_down, Quartz.kCGEventFlagMaskShift)
-                        Quartz.CGEventSetFlags(key_up, Quartz.kCGEventFlagMaskShift)
-                
-                Quartz.CGEventPost(Quartz.kCGHIDEventTap, key_down)
-                time.sleep(random.uniform(0.01, 0.05))
-                Quartz.CGEventPost(Quartz.kCGHIDEventTap, key_up)
-            elif HAS_PYAUTOGUI:
-                pyautogui.press(key_code)
-            return True
+                try:
+                    if isinstance(key, str):
+                        keyboard.send(key)
+                    else:
+                        # Convert numeric code to key name
+                        for name, code in key_map.items():
+                            if code == key:
+                                keyboard.send(name)
+                                break
+                    return True
+                except:
+                    pass
+            
+            if HAS_QUARTZ:
+                try:
+                    key_down = Quartz.CGEventCreateKeyboardEvent(None, key_code, True)
+                    key_up = Quartz.CGEventCreateKeyboardEvent(None, key_code, False)
+                    
+                    if modifiers:
+                        if 'shift' in modifiers:
+                            Quartz.CGEventSetFlags(key_down, Quartz.kCGEventFlagMaskShift)
+                            Quartz.CGEventSetFlags(key_up, Quartz.kCGEventFlagMaskShift)
+                    
+                    Quartz.CGEventPost(Quartz.kCGHIDEventTap, key_down)
+                    time.sleep(random.uniform(0.01, 0.05))
+                    Quartz.CGEventPost(Quartz.kCGHIDEventTap, key_up)
+                    return True
+                except Exception as e:
+                    print(f"Quartz key press error: {e}")
+            
+            if HAS_PYAUTOGUI:
+                try:
+                    if isinstance(key, str):
+                        pyautogui.press(key)
+                    return True
+                except:
+                    pass
+            
+            return False
         except Exception as e:
             print(f"Error pressing key: {e}")
             return False
