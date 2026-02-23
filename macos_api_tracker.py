@@ -41,7 +41,7 @@ except ImportError:
 _last_mouse_position = None
 _failSafeTriggered = False
 
-# Mouse button constants (for reference, not used in macOS API)
+# Mouse button constants (Windows reference only; macOS uses Quartz)
 MOUSEEVENTF_MOVE = 0x0001
 MOUSEEVENTF_LEFTDOWN = 0x0002
 MOUSEEVENTF_LEFTUP = 0x0004
@@ -69,6 +69,17 @@ VK_SPACE = 0x31
 VK_SHIFT = 0x38
 VK_CONTROL = 0x3B
 VK_COMMAND = 0x37  # macOS Command key
+
+SAFE_ZONE_MARGIN = 100   # Pixels from screen edges for safe zone
+FAILSAFE_CORNER_PX = 10  # Mouse in (0,0)-(this,this) triggers failsafe
+
+# Unified key name -> macOS key code for navigation and key mapping
+NAV_KEY_MAP = {
+    'up': VK_UP, 'down': VK_DOWN, 'left': VK_LEFT, 'right': VK_RIGHT,
+    'pageup': VK_PRIOR, 'pagedown': VK_NEXT, 'home': VK_HOME, 'end': VK_END,
+    'tab': VK_TAB, 'shift': VK_SHIFT, 'return': VK_RETURN, 'enter': VK_RETURN,
+    'delete': VK_DELETE, 'backspace': VK_BACK, 'space': VK_SPACE,
+}
 
 class MacOSAPITracker:
     def __init__(self):
@@ -177,10 +188,10 @@ class MacOSAPITracker:
             )
             if result.returncode == 0 and '1' in result.stdout:
                 return True  # Natural scrolling enabled
-        except:
+        except Exception:
             pass
         return False  # Default to traditional
-    
+
     def _detect_screen_dimensions(self):
         """Detect screen dimensions with proper Retina support"""
         if HAS_QUARTZ:
@@ -203,7 +214,20 @@ class MacOSAPITracker:
             print("⚠️ Could not detect screen size, using default 1920x1080")
         
         print(f"📺 Screen detected: {self.screen_width}x{self.screen_height}")
-    
+
+    def _get_mouse_position(self):
+        """Get current mouse (x, y) or None if unavailable."""
+        try:
+            if HAS_QUARTZ:
+                event = Quartz.CGEventCreate(None)
+                pos = Quartz.CGEventGetLocation(event)
+                return (pos.x, pos.y)
+            if HAS_PYAUTOGUI:
+                return pyautogui.position()
+        except Exception:
+            pass
+        return None
+
     def load_config(self):
         """Load configuration from file or create default"""
         default_config = {
@@ -229,11 +253,12 @@ class MacOSAPITracker:
             }
         }
         
+        config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tracker_config.json')
         try:
-            with open('tracker_config.json', 'r') as f:
+            with open(config_path, 'r') as f:
                 return json.load(f)
         except FileNotFoundError:
-            with open('tracker_config.json', 'w') as f:
+            with open(config_path, 'w') as f:
                 json.dump(default_config, f, indent=2)
             return default_config
     
@@ -273,15 +298,14 @@ class MacOSAPITracker:
     
     def get_safe_zone(self):
         """Get safe zone coordinates for macOS screen"""
-        margin = 100  # Safe margin from edges
-        
+        margin = SAFE_ZONE_MARGIN
         safe_x_min = margin
         safe_x_max = self.screen_width - margin
         safe_y_min = margin + 50  # Extra margin from top (menu bar)
         safe_y_max = self.screen_height - margin - 50  # Extra margin from bottom (dock)
         
         return safe_x_min, safe_x_max, safe_y_min, safe_y_max
-    
+
     def move_mouse_to(self, x, y):
         """Move mouse to absolute position using macOS API"""
         # Check failsafe before moving
@@ -307,15 +331,8 @@ class MacOSAPITracker:
     def click_mouse(self, button='left'):
         """Click mouse button using macOS API"""
         try:
-            # Get current mouse position
-            if HAS_QUARTZ:
-                event = Quartz.CGEventCreate(None)
-                pos = Quartz.CGEventGetLocation(event)
-                x, y = pos.x, pos.y
-            elif HAS_PYAUTOGUI:
-                x, y = pyautogui.position()
-            else:
-                x, y = 0, 0
+            pos = self._get_mouse_position()
+            x, y = (pos if pos else (0, 0))
             
             if button == 'left':
                 if HAS_QUARTZ:
@@ -351,15 +368,10 @@ class MacOSAPITracker:
     def double_click_mouse(self):
         """Double click using macOS API"""
         try:
-            # Get current position
-            if HAS_QUARTZ:
-                event = Quartz.CGEventCreate(None)
-                pos = Quartz.CGEventGetLocation(event)
-                x, y = pos.x, pos.y
-            elif HAS_PYAUTOGUI:
-                x, y = pyautogui.position()
-            else:
+            pos = self._get_mouse_position()
+            if pos is None:
                 return False
+            x, y = pos
             
             if HAS_QUARTZ:
                 # First click
@@ -426,22 +438,18 @@ class MacOSAPITracker:
     def _check_failsafe(self):
         """Check if mouse is in top-left corner (failsafe trigger)"""
         global _last_mouse_position, _failSafeTriggered
-        
+
         if _failSafeTriggered:
             return True
-            
+
+        pos = self._get_mouse_position()
+        if pos is None:
+            return False
+        x, y = pos
+
         try:
-            if HAS_QUARTZ:
-                event = Quartz.CGEventCreate(None)
-                pos = Quartz.CGEventGetLocation(event)
-                x, y = pos.x, pos.y
-            elif HAS_PYAUTOGUI:
-                x, y = pyautogui.position()
-            else:
-                return False
-            
-            # Check if mouse is in top-left corner (0,0 to 10,10)
-            if x < 10 and y < 10:
+            # Check if mouse is in top-left corner (failsafe zone)
+            if x < FAILSAFE_CORNER_PX and y < FAILSAFE_CORNER_PX:
                 print("\n🛑 FAILSAFE TRIGGERED: Mouse in top-left corner!")
                 _failSafeTriggered = True
                 self.is_running = False
@@ -449,9 +457,9 @@ class MacOSAPITracker:
             
             _last_mouse_position = (x, y)
             return False
-        except:
+        except Exception:
             return False
-    
+
     def press_key(self, vk_code):
         """Press a key using macOS API"""
         try:
@@ -463,13 +471,13 @@ class MacOSAPITracker:
                 Quartz.CGEventPost(Quartz.kCGHIDEventTap, key_up)
             elif HAS_KEYBOARD:
                 # Map key codes to key names for keyboard module
-                key_map = {
+                vk_to_name = {
                     0x7B: 'left', 0x7C: 'right', 0x7E: 'up', 0x7D: 'down',
                     0x30: 'tab', 0x24: 'enter', 0x33: 'backspace',
                     0x75: 'delete', 0x31: 'space', 0x35: 'esc',
                     0x7F: 'home', 0x77: 'end', 0x74: 'page up', 0x79: 'page down'
                 }
-                key_name = key_map.get(vk_code, chr(vk_code) if vk_code < 128 else 'enter')
+                key_name = vk_to_name.get(vk_code, chr(vk_code) if vk_code < 128 else 'enter')
                 keyboard.send(key_name)
             elif HAS_PYAUTOGUI:
                 pyautogui.press(chr(vk_code) if vk_code < 128 else 'enter')
@@ -636,43 +644,23 @@ class MacOSAPITracker:
         """Simulate basic navigation key presses"""
         if not self.is_running:
             return "Stopped"
-        
+
         # High activity: moderate keyboard navigation
         key_probability = random.uniform(0.4, 0.7)  # 40-70% chance
-        
+
         if random.random() > key_probability:
             return "Skipped (low probability)"
-        
-        # Navigation keys mapping for macOS
-        key_map = {
-            'up': VK_UP,
-            'down': VK_DOWN,
-            'left': VK_LEFT,
-            'right': VK_RIGHT,
-            'pageup': VK_PRIOR,
-            'pagedown': VK_NEXT,
-            'home': VK_HOME,
-            'end': VK_END,
-            'tab': VK_TAB,
-            'shift': VK_SHIFT,
-            'return': VK_RETURN,
-            'enter': VK_RETURN,
-            'delete': VK_DELETE,
-            'backspace': VK_BACK,
-            'space': VK_SPACE
-        }
-        
+
         # High activity: moderate keys per session (1-4 keys)
         num_keys = random.randint(1, 4)
         keys_pressed = []
-        
+
         for _ in range(num_keys):
             if not self.is_running:
                 break
-                
-            # Random key selection
-            key_name = random.choice(list(key_map.keys()))
-            vk_code = key_map[key_name]
+
+            key_name = random.choice(list(NAV_KEY_MAP.keys()))
+            vk_code = NAV_KEY_MAP[key_name]
             keys_pressed.append(key_name)
             
             # Actually press the key
@@ -873,7 +861,11 @@ class MacOSAPITracker:
                 keyboard.press('shift')
                 self.click_mouse('left')
                 keyboard.release('shift')
-        
+            elif HAS_PYAUTOGUI:
+                pyautogui.keyDown('shift')
+                self.click_mouse('left')
+                pyautogui.keyUp('shift')
+
         time.sleep(random.uniform(0.3, 1.0))
         return f"Real text selection using {selection_type}"
     
@@ -1179,12 +1171,16 @@ class MacOSAPITracker:
         
         # Show session summary
         session_duration = time.time() - self.session_analytics['start_time']
+        duration_minutes = session_duration / 60
+        activities = self.session_analytics['total_activities']
+        apm = activities / duration_minutes if duration_minutes > 0 else 0
+
         print("\n" + "=" * 60)
         print("✅ Real macOS API Activity Tracker completed successfully")
         print(f"📊 Session Summary:")
-        print(f"   • Duration: {session_duration/60:.1f} minutes")
-        print(f"   • Total activities: {self.session_analytics['total_activities']}")
-        print(f"   • Activities per minute: {self.session_analytics['total_activities']/(session_duration/60):.1f}")
+        print(f"   • Duration: {duration_minutes:.1f} minutes")
+        print(f"   • Total activities: {activities}")
+        print(f"   • Activities per minute: {apm:.1f}")
         print(f"   • Mistakes made: {self.session_analytics['mistakes_made']}")
         print(f"   • Human-likeness: {random.uniform(0.7, 0.95):.2f}")
         print("=" * 60)
