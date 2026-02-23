@@ -95,7 +95,7 @@ class MacOSAPITracker:
             'mistakes_made': 0
         }
         
-        # Check for Accessibility permissions on macOS
+        # Check for Accessibility permissions on macOS (required for both Quartz and pyautogui)
         self._check_accessibility_permissions()
         
         # Detect natural scrolling setting (macOS)
@@ -109,24 +109,61 @@ class MacOSAPITracker:
         elif HAS_PYAUTOGUI:
             print("✅ pyautogui fallback enabled")
         
+        # On macOS, verify mouse control actually works (fails silently without Accessibility)
+        if sys.platform == 'darwin' and HAS_PYAUTOGUI and not self._verify_mouse_control():
+            print("")
+            print("❌ Mouse control is NOT working. This usually means Accessibility is not granted.")
+            print("   Fix: System Settings → Privacy & Security → Accessibility")
+            print("   Add: Terminal (or iTerm / your IDE) and ensure the checkbox is ON.")
+            print("   Then quit and reopen Terminal and run this script again.")
+            print("")
+            sys.exit(1)
+        
         print("⚠️  WARNING: This will actually move your mouse and click!")
         print("⚠️  Make sure no important work is open!")
         print("💡 Tip: Create a 'STOP_TRACKER.txt' file to stop immediately")
     
     def _check_accessibility_permissions(self):
-        """Check if the app has Accessibility permissions on macOS"""
+        """Check if the app has Accessibility permissions on macOS (needed for Quartz and pyautogui)"""
+        if sys.platform != 'darwin':
+            return
         if HAS_QUARTZ:
             try:
-                # Try to create a simple event to test permissions
                 test_event = Quartz.CGEventCreate(None)
                 if test_event:
-                    # Clean up
                     del test_event
-                    print("✅ Accessibility permissions verified")
-            except Exception as e:
-                print("⚠️  WARNING: Accessibility permissions may not be granted!")
-                print("   Go to: System Preferences > Security & Privacy > Privacy > Accessibility")
-                print("   Add your terminal/Python to the allowed apps")
+                    print("✅ Accessibility permissions verified (Quartz)")
+            except Exception:
+                print("⚠️  WARNING: Accessibility may not be granted!")
+                self._print_accessibility_instructions()
+        elif HAS_PYAUTOGUI:
+            # pyautogui on macOS also needs Accessibility; we'll verify with a real move in _verify_mouse_control
+            print("💡 On macOS, Terminal (or your app) must have Accessibility permission for mouse control.")
+    
+    def _print_accessibility_instructions(self):
+        """Print how to grant Accessibility on macOS."""
+        print("   Go to: System Settings → Privacy & Security → Accessibility")
+        print("   Add Terminal (or iTerm / your IDE) and enable the checkbox.")
+    
+    def _verify_mouse_control(self):
+        """Actually test if we can move the mouse (macOS blocks without Accessibility). Returns True if working."""
+        if not HAS_PYAUTOGUI:
+            return True  # Skip verification if no pyautogui (e.g. Quartz-only)
+        try:
+            before = pyautogui.position()
+            test_x = max(50, min(self.screen_width - 50, before[0] + 40))
+            test_y = max(50, min(self.screen_height - 50, before[1] + 30))
+            pyautogui.moveTo(test_x, test_y, duration=0.05)
+            time.sleep(0.08)
+            after = pyautogui.position()
+            # Success if cursor moved at least 20 pixels
+            moved = abs(after[0] - before[0]) >= 20 or abs(after[1] - before[1]) >= 20
+            if moved:
+                pyautogui.moveTo(before[0], before[1], duration=0.05)
+            return moved
+        except Exception as e:
+            print(f"   Verification failed: {e}")
+            return False
     
     def _detect_natural_scrolling(self):
         """Detect if macOS natural scrolling is enabled"""
